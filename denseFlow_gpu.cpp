@@ -1,12 +1,14 @@
 #include "opencv2/video/tracking.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
 #include "opencv2/highgui/highgui.hpp"
-#include "opencv2/gpu/gpu.hpp"
+#include "opencv2/cudaarithm.hpp"
+#include <opencv2/cudaoptflow.hpp>
 
 #include <stdio.h>
 #include <iostream>
 using namespace cv;
-using namespace cv::gpu;
+using namespace cv::cuda;
+using namespace std;
 
 static void convertFlowToImage(const Mat &flow_x, const Mat &flow_y, Mat &img_x, Mat &img_y,
        double lowerBound, double higherBound) {
@@ -52,6 +54,7 @@ int main(int argc, char** argv){
 	string xFlowFile = cmd.get<string>("xFlowFile");
 	string yFlowFile = cmd.get<string>("yFlowFile");
 	string imgFile = cmd.get<string>("imgFile");
+    string strSavePath = "";
 	int bound = cmd.get<int>("bound");
         int type  = cmd.get<int>("type");
         int device_id = cmd.get<int>("device_id");
@@ -63,15 +66,15 @@ int main(int argc, char** argv){
 		return -1;
 	}
 
-	int frame_num = 0;
-	Mat image, prev_image, prev_grey, grey, frame, flow_x, flow_y;
-	GpuMat frame_0, frame_1, flow_u, flow_v;
+	int frame_num = 0, intHeight, intWidth;
+	Mat image, prev_image, prev_grey, grey, frame, flow, flows[2];
+	GpuMat frame_0, frame_1, gflow;
 
 	setDevice(device_id);
-	FarnebackOpticalFlow alg_farn;
-	OpticalFlowDual_TVL1_GPU alg_tvl1;
-	BroxOpticalFlow alg_brox(0.197f, 50.0f, 0.8f, 10, 77, 10);
-
+    cv::Ptr<cv::cuda::OpticalFlowDual_TVL1> alg_tvl1 = cv::cuda::OpticalFlowDual_TVL1::create();
+	cv::Ptr<cv::cuda::FarnebackOpticalFlow> alg_farn = cv::cuda::FarnebackOpticalFlow::create();
+	cv::Ptr<cv::cuda::BroxOpticalFlow> alg_brox = cv::cuda::BroxOpticalFlow::create();
+    
 	while(true) {
 		capture >> frame;
 		if(frame.empty())
@@ -108,37 +111,44 @@ int main(int argc, char** argv){
         // GPU optical flow
 		switch(type){
 		case 0:
-			alg_farn(frame_0,frame_1,flow_u,flow_v);
+			alg_farn->calc(frame_0, frame_1, gflow);
 			break;
 		case 1:
-			alg_tvl1(frame_0,frame_1,flow_u,flow_v);
+            alg_tvl1->calc(frame_0, frame_1, gflow);
 			break;
 		case 2:
 			GpuMat d_frame0f, d_frame1f;
 	        frame_0.convertTo(d_frame0f, CV_32F, 1.0 / 255.0);
 	        frame_1.convertTo(d_frame1f, CV_32F, 1.0 / 255.0);
-			alg_brox(d_frame0f, d_frame1f, flow_u,flow_v);
+			alg_brox->calc(d_frame0f, d_frame1f, gflow);
 			break;
 		}
 
-		flow_u.download(flow_x);
-		flow_v.download(flow_y);
+		gflow.download(flow);
+        cv::split(flow, flows);
+
 
 		// Output optical flow
-		Mat imgX(flow_x.size(),CV_8UC1);
-		Mat imgY(flow_y.size(),CV_8UC1);
-		convertFlowToImage(flow_x,flow_y, imgX, imgY, -bound, bound);
-		char tmp[20];
-		sprintf(tmp,"_%05d.jpg",int(frame_num));
+        Mat imgX(flows[0].size(), CV_8UC1);
+		Mat imgY(flows[1].size(), CV_8UC1);
+        convertFlowToImage(flows[0], flows[1], imgX, imgY, -bound, bound);
+		char chrSuffix[20];
+		snprintf(chrSuffix, 20, "_%06d.jpg", frame_num);
 
-		// Mat imgX_, imgY_, image_;
-		// resize(imgX,imgX_,cv::Size(340,256));
-		// resize(imgY,imgY_,cv::Size(340,256));
-		// resize(image,image_,cv::Size(340,256));
+        cv::Mat imgX_, imgY_, image_;
+		intHeight = (intHeight > 0) ? intHeight : imgX.rows;
+		intWidth = (intWidth  > 0) ? intWidth : imgX.cols;
+		resize(imgX, imgX_, cv::Size(intWidth, intHeight));
+		resize(imgY, imgY_, cv::Size(intWidth, intHeight));
+		resize(image, image_, cv::Size(intWidth, intHeight));
 
-		imwrite(xFlowFile + tmp,imgX);
-		imwrite(yFlowFile + tmp,imgY);
-		imwrite(imgFile + tmp, image);
+		//cv::namedWindow("image", cv::WINDOW_AUTOSIZE);
+		//cv::imshow("image", imgY_);
+		//cv::waitKey(20);
+
+		cv::imwrite(strSavePath + xFlowFile + chrSuffix, imgX_);
+		cv::imwrite(strSavePath + yFlowFile + chrSuffix, imgY_);
+		cv::imwrite(strSavePath + imgFile + chrSuffix, image_);
 
 		std::swap(prev_grey, grey);
 		std::swap(prev_image, image);
