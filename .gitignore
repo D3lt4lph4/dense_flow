@@ -1,1 +1,6 @@
 *.o
+CMakeFiles/
+*.cmake
+Makefile
+*.txt
+denseFlow_gpu
